@@ -13,6 +13,8 @@ from overcooked_ai_py.mdp.layout_generator import (
     POT,
     SERVING_LOC,
     TOMATO_DISPENSER,
+    CABBAGE_DISPENSER,
+    FISH_DISPENSER
 )
 from overcooked_ai_py.static import FONTS_DIR, GRAPHICS_DIR
 from overcooked_ai_py.utils import (
@@ -100,6 +102,8 @@ class StateVisualizer:
         POT: "pot",
         DISH_DISPENSER: "dishes",
         SERVING_LOC: "serve",
+        CABBAGE_DISPENSER: "cabbages",
+        FISH_DISPENSER: "fishes",
     }
 
     def __init__(self, **kwargs):
@@ -226,6 +230,7 @@ class StateVisualizer:
     def display_rendered_state(
         self,
         state,
+        trajectory=None,
         hud_data=None,
         action_probs=None,
         grid=None,
@@ -247,7 +252,7 @@ class StateVisualizer:
             window_display or img_path or ipython_display
         ), "specify at least one of the ways to output result state image: window_display, img_path, or ipython_display"
         surface = self.render_state(
-            state, grid, hud_data, action_probs=action_probs
+            state, grid, trajectory, hud_data, action_probs=action_probs
         )
 
         if img_path is None and ipython_display:
@@ -266,7 +271,7 @@ class StateVisualizer:
 
         return img_path
 
-    def render_state(self, state, grid, hud_data=None, action_probs=None):
+    def render_state(self, state, grid, trajectory=None, hud_data=None, action_probs=None):
         """
         returns surface with rendered game state scaled to selected size,
         decoupled from display_rendered_state function to make testing easier
@@ -277,7 +282,8 @@ class StateVisualizer:
         grid_surface = pygame.surface.Surface(
             self._unscaled_grid_pixel_size(grid)
         )
-        self._render_grid(grid_surface, grid)
+        
+        self._render_grid(grid_surface, grid, trajectory)
         self._render_players(grid_surface, state.players)
         self._render_objects(grid_surface, state.objects, grid)
 
@@ -362,13 +368,59 @@ class StateVisualizer:
             y_tiles * self.UNSCALED_TILE_SIZE,
         )
 
-    def _render_grid(self, surface, grid):
+    def _render_grid(self, surface, grid, trajectory=None):
         for y_tile, row in enumerate(grid):
             for x_tile, tile in enumerate(row):
                 self.TERRAINS_IMG.blit_on_surface(
                     surface,
                     self._position_in_unscaled_pixels((x_tile, y_tile)),
                     StateVisualizer.TILE_TO_FRAME_NAME[tile],
+                )
+        # show trajectory in grid
+        if trajectory is not None and len(trajectory) > 0:
+            for i in range(len(trajectory)-1):
+                curr_x, curr_y, _ = trajectory[i]
+                prev_x, prev_y, _ = trajectory[i-1]
+                curr_action = (trajectory[i+1][0]-curr_x, trajectory[i+1][1]-curr_y)        
+                prev_action = (curr_x-prev_x, curr_y-prev_y)
+                curr_name = Direction.DIRECTION_TO_NAME[curr_action].lower()
+                if i == 0:
+                    frame_name = "floor-stop-%s" % curr_name
+                else:
+                    prev_name = Direction.DIRECTION_TO_NAME[prev_action].lower()
+                    if prev_name == "north":
+                        if curr_name == "north" or curr_name == "south":
+                            frame_name = "floor-%s-%s" % ("south", "north")
+                        elif curr_name == "east":
+                            frame_name = "floor-%s-%s" % ("south", "east")
+                        elif curr_name == "west":
+                            frame_name = "floor-%s-%s" % ("west", "south")
+                    elif prev_name == "south":
+                        if curr_name == "north" or curr_name == "south":
+                            frame_name = "floor-%s-%s" % ("south", "north")
+                        elif curr_name == "east":
+                            frame_name = "floor-%s-%s" % ("north", "east")
+                        elif curr_name == "west":
+                            frame_name = "floor-%s-%s" % ("west", "north")
+                    elif prev_name == "east":
+                        if curr_name == "west" or curr_name == "east":
+                            frame_name = "floor-%s-%s" % ("west", "east")
+                        elif curr_name == "north":
+                            frame_name = "floor-%s-%s" % ("west", "north")
+                        elif curr_name == "south":
+                            frame_name = "floor-%s-%s" % ("west", "south")
+                    elif prev_name == "west":
+                        if curr_name == "west" or curr_name == "east":
+                            frame_name = "floor-%s-%s" % ("west", "east")
+                        elif curr_name == "north":
+                            frame_name = "floor-%s-%s" % ("north", "east")
+                        elif curr_name == "south":
+                            frame_name = "floor-%s-%s" % ("south", "east")
+                
+                self.TERRAINS_IMG.blit_on_surface(
+                    surface,
+                    self._position_in_unscaled_pixels((curr_x, curr_y)),
+                    frame_name,
                 )
 
     def _position_in_unscaled_pixels(self, position):
@@ -426,10 +478,14 @@ class StateVisualizer:
     def _soup_frame_name(ingredients_names, status):
         num_onions = ingredients_names.count("onion")
         num_tomatoes = ingredients_names.count("tomato")
-        return "soup_%s_tomato_%i_onion_%i" % (
+        num_fish = ingredients_names.count("fish")
+        num_cabbages = ingredients_names.count("cabbage")
+        return "soup_%s_tomato_%i_onion_%i_cabbage_%i_fish_%i" % (
             status,
             num_tomatoes,
             num_onions,
+            num_cabbages,
+            num_fish
         )
 
     def _render_objects(self, surface, objects, grid):
@@ -445,7 +501,8 @@ class StateVisualizer:
             frame_name = StateVisualizer._soup_frame_name(
                 obj.ingredients, soup_status
             )
-            self.SOUPS_IMG.blit_on_surface(
+            print(obj.ingredients, soup_status, frame_name)
+            self.OBJECTS_IMG.blit_on_surface(
                 surface,
                 self._position_in_unscaled_pixels(obj.position),
                 frame_name,
@@ -542,7 +599,7 @@ class StateVisualizer:
                     unscaled_order_size
                 )
                 unscaled_order_surface.fill(self.background_color)
-                self.SOUPS_IMG.blit_on_surface(
+                self.OBJECTS_IMG.blit_on_surface(
                     unscaled_order_surface, (0, 0), frame_name
                 )
                 if scaled_order_size == unscaled_order_size:

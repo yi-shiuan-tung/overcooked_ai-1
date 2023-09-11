@@ -20,10 +20,12 @@ class Recipe:
 
     TOMATO = "tomato"
     ONION = "onion"
-    ALL_INGREDIENTS = [ONION, TOMATO]
+    CABBAGE = "cabbage"
+    FISH = "fish"
+    ALL_INGREDIENTS = [ONION, TOMATO, CABBAGE, FISH]
 
     ALL_RECIPES_CACHE = {}
-    STR_REP = {"tomato": "†", "onion": "ø"}
+    STR_REP = {"tomato": "†", "onion": "ø", "cabbage": "c", "fish": "f"}
 
     _computed = False
     _configured = False
@@ -637,24 +639,32 @@ class SoupState(ObjectState):
 
         if "state" in obj_dict:
             # Legacy soup representation
-            ingredient, num_ingredient, time = obj_dict["state"]
+            ingredient, num_ingredient, time, items_in_pot = obj_dict["state"]
             cooking_tick = -1 if time == 0 else time
-            finished = time >= 20
-            if ingredient == Recipe.TOMATO:
-                return SoupState.get_soup(
-                    obj_dict["position"],
-                    num_tomatoes=num_ingredient,
-                    cooking_tick=cooking_tick,
-                    finished=finished,
-                )
-            else:
-                return SoupState.get_soup(
-                    obj_dict["position"],
-                    num_onions=num_ingredient,
-                    cooking_tick=cooking_tick,
-                    finished=finished,
-                )
+            finished = time >= 5
 
+            num_tomatoes = 0
+            num_onions = 0
+            num_fish = 0
+            num_cabbages = 0
+            for item in items_in_pot:
+                if item == Recipe.TOMATO:
+                    num_tomatoes += 1
+                elif item == Recipe.ONION:
+                    num_onions += 1
+                elif item == Recipe.FISH:
+                    num_fish += 1
+                elif item == Recipe.CABBAGE:
+                    num_cabbages += 1
+            return SoupState.get_soup(
+                obj_dict["position"],
+                num_tomatoes=num_tomatoes,
+                num_onions=num_onions,
+                num_fish=num_fish,
+                num_cabbages=num_cabbages,
+                cooking_tick=cooking_tick,
+                finished=finished,
+            )
         ingredients_objs = [
             ObjectState.from_dict(ing_dict)
             for ing_dict in obj_dict["_ingredients"]
@@ -668,17 +678,19 @@ class SoupState(ObjectState):
         position,
         num_onions=1,
         num_tomatoes=0,
+        num_fish=0,
+        num_cabbages=0,
         cooking_tick=-1,
         finished=False,
         **kwargs
     ):
-        if num_onions < 0 or num_tomatoes < 0:
+        if num_onions < 0 or num_tomatoes < 0 or num_fish < 0 or num_cabbages < 0:
             raise ValueError("Number of active ingredients must be positive")
-        if num_onions + num_tomatoes > Recipe.MAX_NUM_INGREDIENTS:
+        if num_onions + num_tomatoes + num_fish + num_cabbages > Recipe.MAX_NUM_INGREDIENTS:
             raise ValueError("Too many ingredients specified for this soup")
-        if cooking_tick >= 0 and num_tomatoes + num_onions == 0:
+        if cooking_tick >= 0 and num_tomatoes + num_onions + num_fish + num_cabbages == 0:
             raise ValueError("_cooking_tick must be -1 for empty soup")
-        if finished and num_tomatoes + num_onions == 0:
+        if finished and num_tomatoes + num_onions + num_fish + num_cabbages == 0:
             raise ValueError("Empty soup cannot be finished")
         onions = [
             ObjectState(Recipe.ONION, position) for _ in range(num_onions)
@@ -686,7 +698,13 @@ class SoupState(ObjectState):
         tomatoes = [
             ObjectState(Recipe.TOMATO, position) for _ in range(num_tomatoes)
         ]
-        ingredients = onions + tomatoes
+        fish = [
+            ObjectState(Recipe.FISH, position) for _ in range(num_fish)
+        ]
+        cabbages = [
+            ObjectState(Recipe.CABBAGE, position) for _ in range(num_cabbages)
+        ]
+        ingredients = onions + tomatoes + fish + cabbages
         soup = cls(position, ingredients, cooking_tick)
         if finished:
             soup.auto_finish()
@@ -816,9 +834,9 @@ class OvercookedState(object):
         assert len(set(self.bonus_orders)) == len(
             self.bonus_orders
         ), "Bonus orders must not have duplicates"
-        assert len(set(self.all_orders)) == len(
-            self.all_orders
-        ), "All orders must not have duplicates"
+        # assert len(set(self.all_orders)) == len(
+        #     self.all_orders
+        # ), "All orders must not have duplicates"
         assert set(self.bonus_orders).issubset(
             set(self.all_orders)
         ), "Bonus orders must be a subset of all orders"
@@ -1098,7 +1116,7 @@ class OvercookedGridworld(object):
         num_items_for_soup=3,
         order_bonus=2,
         start_state=None,
-        old_dynamics=False,
+        old_dynamics=True,
         **kwargs
     ):
         """
@@ -1541,31 +1559,46 @@ class OvercookedGridworld(object):
                 elif player.get_object().name in Recipe.ALL_INGREDIENTS:
                     # Adding ingredient to soup
 
-                    if not new_state.has_object(i_pos):
-                        # Pot was empty, add soup to it
-                        new_state.add_object(SoupState(i_pos, ingredients=[]))
+                    valid_ingredients = []
+                    # recipes have to be done in exact order
+                    recipes = list(map(lambda x: x["ingredients"], copy.deepcopy(self.start_all_orders)))
+                    
+                    for rec in recipes:
+                        if not new_state.has_object(i_pos):
+                            valid_ingredients.append(rec[0])
+                        else:
+                            soup = new_state.get_object(i_pos)
+                            if soup.is_full:
+                                break
+                            if soup.ingredients == rec[:len(soup.ingredients)]:
+                                valid_ingredients.append(rec[len(soup.ingredients)])
 
-                    # Add ingredient if possible
-                    soup = new_state.get_object(i_pos)
-                    if not soup.is_full:
-                        old_soup = soup.deepcopy()
-                        obj = player.remove_object()
-                        soup.add_ingredient(obj)
-                        shaped_reward[
-                            player_idx
-                        ] += self.reward_shaping_params["PLACEMENT_IN_POT_REW"]
+                    if player.get_object().name in valid_ingredients:
 
-                        # Log potting
-                        self.log_object_potting(
-                            events_infos,
-                            new_state,
-                            old_soup,
-                            soup,
-                            obj.name,
-                            player_idx,
-                        )
-                        if obj.name == Recipe.ONION:
-                            events_infos["potting_onion"][player_idx] = True
+                        if not new_state.has_object(i_pos):
+                            # Pot was empty, add soup to it
+                            new_state.add_object(SoupState(i_pos, ingredients=[]))
+
+                        soup = new_state.get_object(i_pos)
+                        if not soup.is_full:
+                            old_soup = soup.deepcopy()
+                            obj = player.remove_object()
+                            soup.add_ingredient(obj)
+                            shaped_reward[
+                                player_idx
+                            ] += self.reward_shaping_params["PLACEMENT_IN_POT_REW"]
+
+                            # Log potting
+                            self.log_object_potting(
+                                events_infos,
+                                new_state,
+                                old_soup,
+                                soup,
+                                obj.name,
+                                player_idx,
+                            )
+                            if obj.name == Recipe.ONION:
+                                events_infos["potting_onion"][player_idx] = True
 
             elif terrain_type == "S" and player.has_object():
                 obj = player.get_object()
@@ -2101,12 +2134,12 @@ class OvercookedGridworld(object):
             c in "XOPDST123456789 " for c in all_elements
         ), "Invalid character in grid"
         assert all_elements.count("1") == 1, "'1' must be present exactly once"
-        assert (
-            all_elements.count("D") >= 1
-        ), "'D' must be present at least once"
-        assert (
-            all_elements.count("S") >= 1
-        ), "'S' must be present at least once"
+        # assert (
+        #     all_elements.count("D") >= 1
+        # ), "'D' must be present at least once"
+        # assert (
+        #     all_elements.count("S") >= 1
+        # ), "'S' must be present at least once"
         assert (
             all_elements.count("P") >= 1
         ), "'P' must be present at least once"
@@ -2386,9 +2419,9 @@ class OvercookedGridworld(object):
         self, overcooked_state, horizon=400, debug=False
     ):
         """Featurizes a OvercookedState object into a stack of boolean masks that are easily readable by a CNN"""
-        assert (
-            self.num_players == 2
-        ), "Functionality has to be added to support encondings for > 2 players"
+        # assert (
+        #     self.num_players == 2
+        # ), "Functionality has to be added to support encondings for > 2 players"
         assert type(debug) is bool
         base_map_features = [
             "pot_loc",
@@ -2422,13 +2455,13 @@ class OvercookedGridworld(object):
             other_agent_idx = 1 - primary_agent_idx
             ordered_player_features = [
                 "player_{}_loc".format(primary_agent_idx),
-                "player_{}_loc".format(other_agent_idx),
+                # "player_{}_loc".format(other_agent_idx),
             ] + [
                 "player_{}_orientation_{}".format(
                     i, Direction.DIRECTION_TO_INDEX[d]
                 )
                 for i, d in itertools.product(
-                    [primary_agent_idx, other_agent_idx],
+                    [primary_agent_idx],
                     Direction.ALL_DIRECTIONS,
                 )
             ]
@@ -2576,7 +2609,7 @@ class OvercookedGridworld(object):
         )
         return (total_features,)
 
-    def featurize_state(self, overcooked_state, mlam, num_pots=2, **kwargs):
+    def featurize_state(self, overcooked_state, mlam, num_pots=1, **kwargs):
         """
         Encode state with some manually designed features. Works for arbitrary number of players
 
