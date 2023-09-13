@@ -106,14 +106,13 @@ class MultiFramePygameImage:
 
         else:  # assume its format of objects.json, terrain.json and chefs.json
             frames = []
-            for filename, frame_dict in frames_json["frames"].items():
-                frame_dict["filename"] = filename
+            for frame_dict in frames_json["frames"]:
                 frames.append(frame_dict)
 
         result = {}
         for frame_dict in frames:
             assert not frame_dict.get("rotated")  # not implemented support yet
-            assert not frame_dict.get("trimmed")  # not implemented support yet
+            # assert not frame_dict.get("trimmed")  # not implemented support yet
             frame_name = frame_dict["filename"].split(".")[0]
             frame = frame_dict["frame"]
             rect = pygame.Rect(frame["x"], frame["y"], frame["w"], frame["h"])
